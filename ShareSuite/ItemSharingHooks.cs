@@ -28,6 +28,7 @@ namespace ShareSuite
 
         public static void UnHook()
         {
+            On.RoR2.HalcyoniteShrineInteractable.DropRewards -= HalcyoniteShrineInteractable_DropRewards;
             On.RoR2.PurchaseInteraction.OnInteractionBegin -= OnShopPurchase;
             On.RoR2.ShopTerminalBehavior.DropPickup -= OnPurchaseDrop;
             On.RoR2.GenericPickupController.AttemptGrant -= OnGrantItem;
@@ -44,6 +45,7 @@ namespace ShareSuite
 
         public static void Hook()
         {
+            On.RoR2.HalcyoniteShrineInteractable.DropRewards += HalcyoniteShrineInteractable_DropRewards;
             On.RoR2.PurchaseInteraction.OnInteractionBegin += OnShopPurchase;
             On.RoR2.ShopTerminalBehavior.DropPickup += OnPurchaseDrop;
             On.RoR2.GenericPickupController.AttemptGrant += OnGrantItem;
@@ -59,6 +61,35 @@ namespace ShareSuite
             }
 
             //if (ShareSuite.RichMessagesEnabled.Value) IL.RoR2.GenericPickupController.AttemptGrant += RemoveDefaultPickupMessage;
+        }
+
+        private static void HalcyoniteShrineInteractable_DropRewards(On.RoR2.HalcyoniteShrineInteractable.orig_DropRewards orig, HalcyoniteShrineInteractable self)
+        {
+            if (NetworkServer.active)
+            {
+                int playerCount = Run.instance.participatingPlayerCount;
+                
+                if(playerCount > 0 && self.rewardDropTable != null)
+                {
+                    int totalDrops = playerCount * self.quantityIncreaseFromBuyIn;
+
+                    for(int i = 0; i < totalDrops; i++)
+                    {
+                        PickupIndex pickupIndex = self.rewardDropTable.GenerateDrop(self.rng);
+                        if (pickupIndex != PickupIndex.none)
+                        {
+                            PickupDef pickupDef = PickupCatalog.GetPickupDef(pickupIndex);
+                            foreach(var player in PlayerCharacterMasterController.instances.Select(p => p.master))
+                            {
+                                HandleGiveItem(player, pickupDef);
+                            }
+                        }
+                    }
+
+                    return;
+                }
+            }
+            orig(self);
         }
 
         private static PickupIndex ItemLock(On.RoR2.PickupCatalog.orig_FindPickupIndex_string orig, string pickupName)
