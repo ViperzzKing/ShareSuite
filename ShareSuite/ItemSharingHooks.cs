@@ -15,6 +15,7 @@ namespace ShareSuite
 {
     public static class ItemSharingHooks
     {
+        private static readonly Dictionary<PickupPickerController, Interactor> activeInteractors = new Dictionary<PickupPickerController, Interactor>();
         private static bool _itemLock = false;
 
         private static readonly List<CostTypeIndex> PrinterCosts = new List<CostTypeIndex>
@@ -28,7 +29,7 @@ namespace ShareSuite
 
         public static void UnHook()
         {
-            On.RoR2.HalcyoniteShrineInteractable.DropRewards -= HalcyoniteShrineInteractable_DropRewards;
+            On.RoR2.PickupPickerController.CreatePickup_PickupIndex -= CreatePickupSelection_GiveItem;
             On.RoR2.PurchaseInteraction.OnInteractionBegin -= OnShopPurchase;
             On.RoR2.ShopTerminalBehavior.DropPickup -= OnPurchaseDrop;
             On.RoR2.GenericPickupController.AttemptGrant -= OnGrantItem;
@@ -45,7 +46,8 @@ namespace ShareSuite
 
         public static void Hook()
         {
-            On.RoR2.HalcyoniteShrineInteractable.DropRewards += HalcyoniteShrineInteractable_DropRewards;
+            On.RoR2.PickupPickerController.CreatePickup_PickupIndex += CreatePickupSelection_GiveItem;
+            On.RoR2.PickupPickerController.OnInteractionBegin += OnInteractionBeginSelection;
             On.RoR2.PurchaseInteraction.OnInteractionBegin += OnShopPurchase;
             On.RoR2.ShopTerminalBehavior.DropPickup += OnPurchaseDrop;
             On.RoR2.GenericPickupController.AttemptGrant += OnGrantItem;
@@ -63,33 +65,59 @@ namespace ShareSuite
             //if (ShareSuite.RichMessagesEnabled.Value) IL.RoR2.GenericPickupController.AttemptGrant += RemoveDefaultPickupMessage;
         }
 
-        private static void HalcyoniteShrineInteractable_DropRewards(On.RoR2.HalcyoniteShrineInteractable.orig_DropRewards orig, HalcyoniteShrineInteractable self)
+        private static void OnInteractionBeginSelection(On.RoR2.PickupPickerController.orig_OnInteractionBegin orig, PickupPickerController self, Interactor activator)
         {
             if (NetworkServer.active)
             {
-                int playerCount = Run.instance.participatingPlayerCount;
-                
-                if(playerCount > 0 && self.rewardDropTable != null)
-                {
-                    int totalDrops = playerCount * self.quantityIncreaseFromBuyIn;
-
-                    for(int i = 0; i < totalDrops; i++)
-                    {
-                        PickupIndex pickupIndex = self.rewardDropTable.GenerateDrop(self.rng);
-                        if (pickupIndex != PickupIndex.none)
-                        {
-                            PickupDef pickupDef = PickupCatalog.GetPickupDef(pickupIndex);
-                            foreach(var player in PlayerCharacterMasterController.instances.Select(p => p.master))
-                            {
-                                HandleGiveItem(player, pickupDef);
-                            }
-                        }
-                    }
-
-                    return;
-                }
+                // Save interactor per PickupPickerController instance
+                activeInteractors[self] = activator;
             }
-            orig(self);
+            orig(self, activator);
+        }
+
+        private static void CreatePickupSelection_GiveItem(On.RoR2.PickupPickerController.orig_CreatePickup_PickupIndex orig, PickupPickerController self, PickupIndex pickupIndex)
+        {
+            if (!NetworkServer.active)
+            {
+                orig(self, pickupIndex);
+                return;
+            }
+
+            if (!activeInteractors.TryGetValue(self, out var interactor))
+            {
+                orig(self, pickupIndex);
+                return;
+            }
+
+            var characterBody = interactor.GetComponent<CharacterBody>();
+            if (characterBody == null)
+            {
+                activeInteractors.Remove(self);
+                orig(self, pickupIndex);
+                return;
+            }
+
+            var playerMaster = characterBody.master;
+            if (playerMaster == null)
+            {
+                activeInteractors.Remove(self);
+                orig(self, pickupIndex);
+                return;
+            }
+
+            var pickupDef = PickupCatalog.GetPickupDef(pickupIndex);
+            if (pickupDef == null)
+            {
+                activeInteractors.Remove(self);
+                orig(self, pickupIndex);
+                return;
+            }
+
+            HandleGiveItem(playerMaster, pickupDef);
+            Debug.Log($"Granted {pickupDef.nameToken} to player {playerMaster.netId} via direct grant.");
+
+            // Prevent physical spawn
+            activeInteractors.Remove(self);
         }
 
         private static PickupIndex ItemLock(On.RoR2.PickupCatalog.orig_FindPickupIndex_string orig, string pickupName)
@@ -485,14 +513,14 @@ namespace ShareSuite
 
         public static bool IsValidPickupObject(GenericPickupController pickup, CharacterBody picker)
         {
-            if(AdditionalPickupValidityChecks == null)
+            if (AdditionalPickupValidityChecks == null)
                 return true;
             var retv = true;
-            foreach(Func<GenericPickupController, CharacterBody, bool> f in AdditionalPickupValidityChecks.GetInvocationList())
+            foreach (Func<GenericPickupController, CharacterBody, bool> f in AdditionalPickupValidityChecks.GetInvocationList())
                 retv &= f(pickup, picker);
             return retv;
         }
-        
+
         private static PickupIndex? GetRandomItemOfTier(ItemTier tier, PickupIndex orDefault)
         {
             switch (tier)
